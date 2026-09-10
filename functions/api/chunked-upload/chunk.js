@@ -1,8 +1,9 @@
-﻿/**
+/**
  * Upload one file chunk.
  * POST /api/chunked-upload/chunk
  */
 import { checkAuthentication, isAuthRequired } from '../../utils/auth.js';
+import { getUploadTask, saveUploadTask } from '../../utils/chunk-storage.js';
 
 const TEMP_CHUNK_PREFIX = 'chunk-upload';
 
@@ -17,8 +18,8 @@ export async function onRequestPost(context) {
       }
     }
 
-    if (!env.img_url) {
-      return jsonResponse({ error: 'KV binding img_url is required for chunk upload task state.' }, 500);
+    if (!env.DB && !env.R2_BUCKET && !env.img_url) {
+      return jsonResponse({ error: 'No storage available for chunk upload task state.' }, 500);
     }
 
     const formData = await request.formData();
@@ -30,7 +31,7 @@ export async function onRequestPost(context) {
       return jsonResponse({ error: '缺少必要参数' }, 400);
     }
 
-    const taskData = await env.img_url.get(`upload:${uploadId}`, { type: 'json' });
+    const taskData = await getUploadTask(env, uploadId);
     if (!taskData) {
       return jsonResponse({ error: '上传任务不存在或已过期' }, 404);
     }
@@ -66,6 +67,9 @@ export async function onRequestPost(context) {
         },
       });
     } else {
+      if (!env.img_url) {
+        return jsonResponse({ error: 'Neither R2 nor KV is available to store chunk data.' }, 500);
+      }
       await env.img_url.put(`chunk:${uploadId}:${chunkIndex}`, chunkArrayBuffer, {
         expirationTtl: 3600,
         metadata: {
@@ -83,9 +87,7 @@ export async function onRequestPost(context) {
       taskData.uploadedChunks = uploadedChunks;
       taskData.chunkBackend = chunkBackend;
 
-      await env.img_url.put(`upload:${uploadId}`, JSON.stringify(taskData), {
-        expirationTtl: 3600,
-      });
+      await saveUploadTask(env, uploadId, taskData);
     }
 
     const progress = minimizeKvWrites

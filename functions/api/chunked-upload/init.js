@@ -1,9 +1,10 @@
-﻿/**
+/**
  * Initialize chunked upload task.
  * POST /api/chunked-upload/init
  */
 import { checkAuthentication, isAuthRequired } from '../../utils/auth.js';
 import { checkGuestUpload } from '../../utils/guest.js';
+import { saveUploadTask, getUploadTask } from '../../utils/chunk-storage.js';
 
 const CHUNK_SIZE = 5 * 1024 * 1024;
 const MAX_FILE_SIZE = 100 * 1024 * 1024;
@@ -13,8 +14,8 @@ export async function onRequestPost(context) {
   const { request, env } = context;
 
   try {
-    if (!env.img_url) {
-      return jsonResponse({ error: 'KV binding img_url is required for chunk upload task state.' }, 500);
+    if (!env.DB && !env.R2_BUCKET && !env.img_url) {
+      return jsonResponse({ error: 'No storage available (D1, R2, or KV is required) for chunk upload task state.' }, 500);
     }
 
     const isAdmin = isAuthRequired(env)
@@ -64,9 +65,7 @@ export async function onRequestPost(context) {
       status: 'pending',
     };
 
-    await env.img_url.put(`upload:${uploadId}`, JSON.stringify(uploadTask), {
-      expirationTtl: 3600,
-    });
+    await saveUploadTask(env, uploadId, uploadTask);
 
     return jsonResponse({
       success: true,
@@ -92,12 +91,12 @@ export async function onRequestGet(context) {
     return jsonResponse({ error: '缺少 uploadId' }, 400);
   }
 
-  if (!env.img_url) {
-    return jsonResponse({ error: 'KV binding img_url is required.' }, 500);
+  if (!env.DB && !env.R2_BUCKET && !env.img_url) {
+    return jsonResponse({ error: 'No storage available for chunk upload.' }, 500);
   }
 
   try {
-    const taskData = await env.img_url.get(`upload:${uploadId}`, { type: 'json' });
+    const taskData = await getUploadTask(env, uploadId);
     if (!taskData) {
       return jsonResponse({ error: '上传任务不存在或已过期' }, 404);
     }

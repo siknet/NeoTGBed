@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Complete chunked upload request.
  * POST /api/chunked-upload/complete
  */
@@ -18,6 +18,8 @@ import {
   shouldUseSignedTelegramLinks,
   shouldWriteTelegramMetadata,
 } from '../../utils/telegram.js';
+import { getUploadTask, deleteUploadTask } from '../../utils/chunk-storage.js';
+import { saveFileRecord } from '../../utils/db.js';
 
 const TEMP_CHUNK_PREFIX = 'chunk-upload';
 const MB = 1024 * 1024;
@@ -33,8 +35,8 @@ export async function onRequestPost(context) {
       }
     }
 
-    if (!env.img_url) {
-      return jsonResponse({ error: 'KV binding img_url is required for chunk upload task state.' }, 500);
+    if (!env.DB && !env.R2_BUCKET && !env.img_url) {
+      return jsonResponse({ error: 'No storage available for chunk upload task state.' }, 500);
     }
 
     const body = await request.json();
@@ -44,7 +46,7 @@ export async function onRequestPost(context) {
       return jsonResponse({ error: '缺少 uploadId' }, 400);
     }
 
-    const taskData = await env.img_url.get(`upload:${uploadId}`, { type: 'json' });
+    const taskData = await getUploadTask(env, uploadId);
     if (!taskData) {
       return jsonResponse({ error: '上传任务不存在或已过期' }, 404);
     }
@@ -220,23 +222,23 @@ export async function onRequestPost(context) {
       storageType === 'telegram' ? shouldWriteTelegramMetadata(env) : true;
 
     if (shouldWriteMetadata && metadataKey) {
-      await env.img_url.put(metadataKey, '', {
-        metadata: {
-          TimeStamp: Date.now(),
-          ListType: 'None',
-          Label: 'None',
-          liked: false,
-          fileName: taskData.fileName,
-          fileSize: taskData.fileSize,
-          chunked: true,
-          totalChunks,
-          storageType,
-          folderPath: folderPath || undefined,
-          r2Key: storageType === 'r2' ? metadataKey.replace(/^r2:/, '') : undefined,
-          telegramMessageId: storageType === 'telegram' ? taskData.telegramMessageId : undefined,
-          ...extraMetadata,
-        },
-      });
+      const fileMetadata = {
+        TimeStamp: Date.now(),
+        ListType: 'None',
+        Label: 'None',
+        liked: false,
+        fileName: taskData.fileName,
+        fileSize: taskData.fileSize,
+        chunked: true,
+        totalChunks,
+        storageType,
+        folderPath: folderPath || undefined,
+        r2Key: storageType === 'r2' ? metadataKey.replace(/^r2:/, '') : undefined,
+        telegramMessageId: storageType === 'telegram' ? taskData.telegramMessageId : undefined,
+        ...extraMetadata,
+      };
+
+      await saveFileRecord(env, metadataKey, fileMetadata);
     }
 
     if (storageType === 'telegram' && telegramNoticePayload) {
@@ -328,14 +330,15 @@ async function readChunkData(uploadId, chunkIndex, chunkBackend, env) {
     if (!object) return null;
     return await object.arrayBuffer();
   }
-  return await env.img_url.get(`chunk:${uploadId}:${chunkIndex}`, { type: 'arrayBuffer' });
+  if (env.img_url) {
+    return await env.img_url.get(`chunk:${uploadId}:${chunkIndex}`, { type: 'arrayBuffer' });
+  }
+  return null;
 }
 
 async function cleanupUploadTask(uploadId, totalChunks, chunkBackend, env) {
   try {
-    if (!isKvWriteMinimized(env)) {
-      await env.img_url.delete(`upload:${uploadId}`);
-    }
+    await deleteUploadTask(env, uploadId);
 
     if (chunkBackend === 'r2' && env.R2_BUCKET) {
       const toDelete = [];
@@ -343,15 +346,11 @@ async function cleanupUploadTask(uploadId, totalChunks, chunkBackend, env) {
         toDelete.push(env.R2_BUCKET.delete(getChunkObjectKey(uploadId, i)));
       }
       await Promise.allSettled(toDelete);
-      if (isKvWriteMinimized(env)) {
-        // Keep kv writes low in minimize mode, rely on TTL for upload task cleanup.
-        return;
-      }
     }
 
-    if (chunkBackend === 'kv' && !isKvWriteMinimized(env)) {
+    if (chunkBackend === 'kv' && env.img_url && !isKvWriteMinimized(env)) {
       for (let i = 0; i < totalChunks; i++) {
-        await env.img_url.delete(`chunk:${uploadId}:${i}`);
+        await env.img_url.delete(`chunk:${uploadId}:${i}`).catch(() => {});
       }
     }
   } catch (error) {

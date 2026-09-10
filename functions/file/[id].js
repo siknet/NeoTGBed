@@ -9,7 +9,7 @@ import {
   parseSignedTelegramFileId,
   shouldWriteTelegramMetadata,
 } from '../utils/telegram.js';
-import { getFileRecord } from '../utils/db.js';
+import { getFileRecord, saveFileRecord } from '../utils/db.js';
 
 const STORAGE_PREFIXES = ['img:', 'vid:', 'aud:', 'doc:', 'r2:', 's3:', 'discord:', 'hf:', 'webdav:', 'github:', ''];
 
@@ -285,13 +285,13 @@ function shouldCountAsDownload(method, response) {
 }
 
 async function incrementShareDownloadCount(env, kvKey, metadata = {}) {
-  if (!env?.img_url || !kvKey || !metadata) return;
+  if (!kvKey || !metadata) return;
   const nextCount = Number(metadata.shareDownloadCount || 0) + 1;
   const nextMetadata = {
     ...metadata,
     shareDownloadCount: nextCount,
   };
-  await env.img_url.put(kvKey, '', { metadata: nextMetadata });
+  await saveFileRecord(env, kvKey, nextMetadata);
 }
 
 async function handleTelegramFile(context, fileId, record = null) {
@@ -377,7 +377,7 @@ async function handleSignedTelegramFile(context, signedMeta) {
 }
 
 async function backfillSignedTelegramMetadata(env, signedMeta) {
-  if (!env.img_url || !shouldWriteTelegramMetadata(env)) {
+  if ((!env.DB && !env.img_url) || !shouldWriteTelegramMetadata(env)) {
     return;
   }
 
@@ -385,23 +385,21 @@ async function backfillSignedTelegramMetadata(env, signedMeta) {
   const kvKey = `${signedMeta.fileId}.${fileExtension}`;
 
   try {
-    const existing = await env.img_url.getWithMetadata(kvKey);
-    if (existing?.metadata) return;
+    const existing = await getFileRecord(env, kvKey);
+    if (existing?.record?.metadata) return;
 
-    await env.img_url.put(kvKey, '', {
-      metadata: {
-        TimeStamp: signedMeta.timestamp || Date.now(),
-        ListType: 'None',
-        Label: 'None',
-        liked: false,
-        fileName: signedMeta.fileName || `${signedMeta.fileId}.${fileExtension}`,
-        fileSize: signedMeta.fileSize || 0,
-        storageType: 'telegram',
-        telegramFileId: signedMeta.fileId,
-        telegramMessageId: signedMeta.messageId || undefined,
-        signedLink: true,
-        source: 'signed-backfill',
-      },
+    await saveFileRecord(env, kvKey, {
+      TimeStamp: signedMeta.timestamp || Date.now(),
+      ListType: 'None',
+      Label: 'None',
+      liked: false,
+      fileName: signedMeta.fileName || `${signedMeta.fileId}.${fileExtension}`,
+      fileSize: signedMeta.fileSize || 0,
+      storageType: 'telegram',
+      telegramFileId: signedMeta.fileId,
+      telegramMessageId: signedMeta.messageId || undefined,
+      signedLink: true,
+      source: 'signed-backfill',
     });
   } catch (error) {
     console.warn('Signed metadata backfill skipped:', error.message);
@@ -485,13 +483,11 @@ async function handleR2File(context, r2Key, record = null) {
 }
 
 async function getR2RecordFromKV(env, r2Key) {
-  if (!env.img_url) return null;
-
   const candidateKeys = r2Key.startsWith('r2:') ? [r2Key, r2Key.slice(3)] : [`r2:${r2Key}`, r2Key];
 
   for (const key of candidateKeys) {
-    const record = await env.img_url.getWithMetadata(key);
-    if (record?.metadata) return record;
+    const result = await getFileRecord(env, key);
+    if (result?.record?.metadata) return result.record;
   }
 
   return null;
@@ -724,12 +720,10 @@ async function handleGitHubFile(context, fileId, record = null) {
 }
 
 async function findRecordByPrefixes(env, fileId, prefixes = []) {
-  if (!env.img_url) return null;
-
   for (const prefix of prefixes) {
     const key = `${prefix}${fileId}`;
-    const record = await env.img_url.getWithMetadata(key);
-    if (record?.metadata) return record;
+    const result = await getFileRecord(env, key);
+    if (result?.record?.metadata) return result.record;
   }
   return null;
 }
