@@ -4779,34 +4779,45 @@
 
             const uploadId = initData.uploadId;
 
-            // 2. 上传分片
-            for (let i = 0; i < totalChunks; i++) {
-              const start = i * chunkSize;
-              const end = Math.min(start + chunkSize, file.size);
-              const chunk = file.slice(start, end);
+            // 2. 并发上传分片（默认 3 个并发线程）
+            const concurrency = Math.min(3, totalChunks);
+            let nextIndex = 0;
+            let finishedCount = 0;
 
-              const formData = new FormData();
-              formData.append("chunk", chunk);
-              formData.append("uploadId", uploadId);
-              formData.append("chunkIndex", i);
+            const uploadWorker = async () => {
+              while (nextIndex < totalChunks) {
+                const i = nextIndex++;
+                const start = i * chunkSize;
+                const end = Math.min(start + chunkSize, file.size);
+                const chunk = file.slice(start, end);
 
-              const chunkResponse = await fetch(
-                `${this.baseURL}/api/chunked-upload/chunk`,
-                {
-                  method: "POST",
-                  body: formData,
-                  credentials: "include",
-                },
-              );
+                const formData = new FormData();
+                formData.append("chunk", chunk);
+                formData.append("uploadId", uploadId);
+                formData.append("chunkIndex", i);
 
-              if (!chunkResponse.ok) {
-                const errData = await chunkResponse.json();
-                throw new Error(errData.error || `分片 ${i + 1} 上传失败`);
+                const chunkResponse = await fetch(
+                  `${this.baseURL}/api/chunked-upload/chunk`,
+                  {
+                    method: "POST",
+                    body: formData,
+                    credentials: "include",
+                  },
+                );
+
+                if (!chunkResponse.ok) {
+                  const errData = await chunkResponse.json().catch(() => ({}));
+                  throw new Error(errData.error || `分片 ${i + 1} 上传失败`);
+                }
+
+                finishedCount++;
+                // 更新进度：分片占 90%，最后合并占 10%
+                item.progress = Math.round((finishedCount / totalChunks) * 90);
               }
+            };
 
-              // 更新进度
-              item.progress = Math.round(((i + 1) / totalChunks) * 90); // 留 10% 给合并
-            }
+            const workers = Array.from({ length: concurrency }, () => uploadWorker());
+            await Promise.all(workers);
 
             // 3. 完成上传
             const completeResponse = await fetch(

@@ -82,7 +82,8 @@ export async function onRequestPost(context) {
     }
 
     let uploadedChunks = taskData.uploadedChunks || [];
-    if (!minimizeKvWrites) {
+    // 当使用 R2 存储分片时，分片文件本身已经在 R2 桶中作为实体存在，无需每个分片重复更新 D1/KV 任务表
+    if (!minimizeKvWrites && chunkBackend !== 'r2') {
       uploadedChunks = Array.from(new Set([...uploadedChunks, chunkIndex])).sort((a, b) => a - b);
       taskData.uploadedChunks = uploadedChunks;
       taskData.chunkBackend = chunkBackend;
@@ -90,9 +91,7 @@ export async function onRequestPost(context) {
       await saveUploadTask(env, uploadId, taskData);
     }
 
-    const progress = minimizeKvWrites
-      ? (((chunkIndex + 1) / totalChunks) * 100).toFixed(1)
-      : ((uploadedChunks.length / totalChunks) * 100).toFixed(1);
+    const progress = (((chunkIndex + 1) / totalChunks) * 100).toFixed(1);
 
     return jsonResponse({
       success: true,

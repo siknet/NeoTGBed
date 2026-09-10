@@ -61,7 +61,7 @@ export async function onRequestPost(context) {
       return jsonResponse({ error: completionValidation.message, code: completionValidation.code }, completionValidation.status);
     }
 
-    if (!isKvWriteMinimized(env)) {
+    if (!isKvWriteMinimized(env) && chunkBackend !== 'r2') {
       if (!Array.isArray(taskData.uploadedChunks) || taskData.uploadedChunks.length !== totalChunks) {
         return jsonResponse(
           {
