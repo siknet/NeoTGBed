@@ -4089,33 +4089,33 @@
                 supportsChunkUpload: false,
               },
               r2: {
-                maxBytes: this.uploadConfig.maxSize,
-                directThreshold: this.uploadConfig.smallFileThreshold,
+                maxBytes: this.uploadConfig.maxSize, // 100MB
+                directThreshold: this.uploadConfig.maxSize, // 100MB 内直接直传，不切片
                 supportsChunkUpload: true,
               },
               s3: {
                 maxBytes: this.uploadConfig.maxSize,
-                directThreshold: this.uploadConfig.smallFileThreshold,
+                directThreshold: this.uploadConfig.maxSize,
                 supportsChunkUpload: true,
               },
               discord: {
                 maxBytes: 25 * 1024 * 1024,
-                directThreshold: this.uploadConfig.smallFileThreshold,
-                supportsChunkUpload: true,
+                directThreshold: 25 * 1024 * 1024,
+                supportsChunkUpload: false,
               },
               huggingface: {
                 maxBytes: 35 * 1024 * 1024,
-                directThreshold: this.uploadConfig.smallFileThreshold,
-                supportsChunkUpload: true,
+                directThreshold: 35 * 1024 * 1024,
+                supportsChunkUpload: false,
               },
               webdav: {
                 maxBytes: this.uploadConfig.maxSize,
-                directThreshold: this.uploadConfig.smallFileThreshold,
+                directThreshold: this.uploadConfig.maxSize,
                 supportsChunkUpload: true,
               },
               github: {
                 maxBytes: this.uploadConfig.maxSize,
-                directThreshold: this.uploadConfig.smallFileThreshold,
+                directThreshold: this.uploadConfig.maxSize,
                 supportsChunkUpload: true,
               },
             };
@@ -4718,34 +4718,55 @@
             }
           },
 
-          // 直接上传（小文件 <20MB）
+          // 直接上传（支持进度条）
           async directUpload(item) {
-            const formData = new FormData();
-            formData.append("file", item.file);
-            formData.append("storageMode", this.getItemStorageMode(item));
-            formData.append("folderPath", this.getItemFolderPath(item));
+            return new Promise((resolve, reject) => {
+              const formData = new FormData();
+              formData.append("file", item.file);
+              formData.append("storageMode", this.getItemStorageMode(item));
+              formData.append("folderPath", this.getItemFolderPath(item));
 
-            const response = await fetch(`${this.baseURL}/upload`, {
-              method: "POST",
-              body: formData,
-              credentials: "include",
+              const xhr = new XMLHttpRequest();
+              xhr.open("POST", `${this.baseURL}/upload`, true);
+              xhr.withCredentials = true;
+
+              xhr.upload.onprogress = (e) => {
+                if (e.lengthComputable) {
+                  item.progress = Math.round((e.loaded / e.total) * 100);
+                }
+              };
+
+              xhr.onload = () => {
+                let data;
+                try {
+                  data = JSON.parse(xhr.responseText);
+                } catch {
+                  data = null;
+                }
+
+                if (xhr.status >= 200 && xhr.status < 300) {
+                  const src = data && data[0]?.src;
+                  if (!src) {
+                    const err = (data && data[0]?.error) || "未返回文件路径";
+                    reject(new Error(err));
+                    return;
+                  }
+                  item.status = "success";
+                  item.progress = 100;
+                  this.handleUploadSuccess(item, src);
+                  resolve();
+                } else {
+                  const errMsg = (data && (data[0]?.error || data.error)) || xhr.statusText || "上传失败";
+                  reject(new Error(errMsg));
+                }
+              };
+
+              xhr.onerror = () => {
+                reject(new Error("网络传输异常"));
+              };
+
+              xhr.send(formData);
             });
-
-            const data = await response.json();
-
-            if (!response.ok || (Array.isArray(data) && data[0]?.error)) {
-              const serverError = Array.isArray(data)
-                ? data[0]?.error
-                : data?.error;
-              throw new Error(serverError || "上传失败");
-            }
-
-            const src = data[0]?.src;
-            if (!src) throw new Error("未返回文件路径");
-
-            item.status = "success";
-            item.progress = 100;
-            this.handleUploadSuccess(item, src);
           },
 
           // 分片上传（大文件 >=20MB）
