@@ -75,18 +75,6 @@ export async function onRequestPost(context) {
       }
     }
 
-    const chunks = [];
-    for (let i = 0; i < totalChunks; i++) {
-      const chunkData = await readChunkData(uploadId, i, chunkBackend, env);
-      if (!chunkData) {
-        return jsonResponse({ error: `分片 ${i} 数据缺失` }, 500);
-      }
-      chunks.push(chunkData);
-    }
-
-    const completeFile = new Blob(chunks, { type: taskData.fileType || 'application/octet-stream' });
-    const file = new File([completeFile], taskData.fileName, { type: taskData.fileType || 'application/octet-stream' });
-
     const fileExtension = getFileExtension(taskData.fileName);
     let storageType = taskData.storageMode || 'telegram';
     const folderPath = normalizeFolderPath(taskData.folderPath || '');
@@ -95,14 +83,43 @@ export async function onRequestPost(context) {
     let extraMetadata = {};
     let telegramNoticePayload = null;
 
-    if (storageType === 'r2') {
-      if (!env.R2_BUCKET) {
-        return jsonResponse({ error: 'R2 未配置，无法完成上传' }, 500);
+    if (storageType === 'r2' && taskData.r2Multipart?.uploadId && taskData.r2Multipart?.key && env.R2_BUCKET) {
+      // R2 原生分片完成：直接通知 R2 服务端合并，完全无需在 Worker 内存中拼装大 Blob
+      try {
+        const mpUpload = env.R2_BUCKET.resumeMultipartUpload(taskData.r2Multipart.key, taskData.r2Multipart.uploadId);
+        const partsList = await mpUpload.listParts();
+        const uploadedParts = (partsList?.parts || []).map((p) => ({
+          partNumber: p.partNumber,
+          etag: p.etag,
+        }));
+        await mpUpload.complete(uploadedParts);
+        responseFileKey = `r2:${taskData.r2Multipart.key}`;
+        metadataKey = responseFileKey;
+      } catch (mpErr) {
+        console.error('R2 completeMultipartUpload failed:', mpErr);
+        return jsonResponse({ error: 'R2 原生分片合并失败: ' + mpErr.message }, 500);
       }
-      const uploadResult = await uploadToR2(file, fileExtension, env);
-      responseFileKey = uploadResult.fileKey;
-      metadataKey = uploadResult.fileKey;
-    } else if (storageType === 's3') {
+    } else {
+      const chunks = [];
+      for (let i = 0; i < totalChunks; i++) {
+        const chunkData = await readChunkData(uploadId, i, chunkBackend, env);
+        if (!chunkData) {
+          return jsonResponse({ error: `分片 ${i} 数据缺失` }, 500);
+        }
+        chunks.push(chunkData);
+      }
+
+      const completeFile = new Blob(chunks, { type: taskData.fileType || 'application/octet-stream' });
+      const file = new File([completeFile], taskData.fileName, { type: taskData.fileType || 'application/octet-stream' });
+
+      if (storageType === 'r2') {
+        if (!env.R2_BUCKET) {
+          return jsonResponse({ error: 'R2 未配置，无法完成上传' }, 500);
+        }
+        const uploadResult = await uploadToR2(file, fileExtension, env);
+        responseFileKey = uploadResult.fileKey;
+        metadataKey = uploadResult.fileKey;
+      } else if (storageType === 's3') {
       if (!env.S3_ENDPOINT || !env.S3_ACCESS_KEY_ID) {
         return jsonResponse({ error: 'S3 未配置，无法完成上传' }, 500);
       }
@@ -217,6 +234,7 @@ export async function onRequestPost(context) {
         fileSize: taskData.fileSize,
       };
     }
+  }
 
     const shouldWriteMetadata =
       storageType === 'telegram' ? shouldWriteTelegramMetadata(env) : true;

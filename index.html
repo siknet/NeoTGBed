@@ -4090,32 +4090,32 @@
               },
               r2: {
                 maxBytes: this.uploadConfig.maxSize, // 100MB
-                directThreshold: this.uploadConfig.maxSize, // 100MB 内直接直传，不切片
+                directThreshold: this.uploadConfig.smallFileThreshold, // 20MB, 超过走分片
                 supportsChunkUpload: true,
               },
               s3: {
                 maxBytes: this.uploadConfig.maxSize,
-                directThreshold: this.uploadConfig.maxSize,
+                directThreshold: this.uploadConfig.smallFileThreshold,
                 supportsChunkUpload: true,
               },
               discord: {
                 maxBytes: 25 * 1024 * 1024,
-                directThreshold: 25 * 1024 * 1024,
+                directThreshold: this.uploadConfig.smallFileThreshold,
                 supportsChunkUpload: false,
               },
               huggingface: {
                 maxBytes: 35 * 1024 * 1024,
-                directThreshold: 35 * 1024 * 1024,
+                directThreshold: this.uploadConfig.smallFileThreshold,
                 supportsChunkUpload: false,
               },
               webdav: {
                 maxBytes: this.uploadConfig.maxSize,
-                directThreshold: this.uploadConfig.maxSize,
+                directThreshold: this.uploadConfig.smallFileThreshold,
                 supportsChunkUpload: true,
               },
               github: {
                 maxBytes: this.uploadConfig.maxSize,
-                directThreshold: this.uploadConfig.maxSize,
+                directThreshold: this.uploadConfig.smallFileThreshold,
                 supportsChunkUpload: true,
               },
             };

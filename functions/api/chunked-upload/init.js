@@ -51,6 +51,30 @@ export async function onRequestPost(context) {
 
     const chunkBackend = resolveChunkBackend(env);
 
+    let r2Multipart = null;
+    if (normalizedStorage === 'r2' && env.R2_BUCKET) {
+      try {
+        const fileExt = getFileExtension(fileName);
+        const r2FileId = `r2_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+        const r2ObjectKey = `${r2FileId}.${fileExt}`;
+        const mpUpload = await env.R2_BUCKET.createMultipartUpload(r2ObjectKey, {
+          httpMetadata: {
+            contentType: fileType || 'application/octet-stream',
+          },
+          customMetadata: {
+            fileName,
+            uploadTime: Date.now().toString(),
+          },
+        });
+        r2Multipart = {
+          uploadId: mpUpload.uploadId,
+          key: mpUpload.key,
+        };
+      } catch (mpErr) {
+        console.warn('R2 createMultipartUpload failed, falling back to chunk objects:', mpErr.message);
+      }
+    }
+
     const uploadTask = {
       uploadId,
       fileName,
@@ -60,6 +84,7 @@ export async function onRequestPost(context) {
       storageMode: normalizedStorage,
       folderPath,
       chunkBackend,
+      r2Multipart,
       uploadedChunks: [],
       createdAt: Date.now(),
       status: 'pending',
@@ -184,3 +209,10 @@ function normalizeFolderPath(value) {
   }
   return output.join('/');
 }
+
+function getFileExtension(fileName) {
+  const ext = String(fileName || '').split('.').pop()?.toLowerCase();
+  if (!ext || ext === String(fileName || '').toLowerCase()) return 'bin';
+  return ext.replace(/[^a-z0-9]/g, '') || 'bin';
+}
+

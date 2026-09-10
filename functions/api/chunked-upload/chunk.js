@@ -58,14 +58,20 @@ export async function onRequestPost(context) {
         return jsonResponse({ error: 'R2 chunk backend requested but R2_BUCKET is not configured.' }, 500);
       }
 
-      await env.R2_BUCKET.put(getChunkObjectKey(uploadId, chunkIndex), chunkArrayBuffer, {
-        customMetadata: {
-          type: 'chunk',
-          uploadId,
-          chunkIndex: String(chunkIndex),
-          createdAt: String(Date.now()),
-        },
-      });
+      if (taskData.r2Multipart?.uploadId && taskData.r2Multipart?.key) {
+        // R2 原生分片上传：partNumber 从 1 开始
+        const mpUpload = env.R2_BUCKET.resumeMultipartUpload(taskData.r2Multipart.key, taskData.r2Multipart.uploadId);
+        await mpUpload.uploadPart(chunkIndex + 1, chunkArrayBuffer);
+      } else {
+        await env.R2_BUCKET.put(getChunkObjectKey(uploadId, chunkIndex), chunkArrayBuffer, {
+          customMetadata: {
+            type: 'chunk',
+            uploadId,
+            chunkIndex: String(chunkIndex),
+            createdAt: String(Date.now()),
+          },
+        });
+      }
     } else {
       if (!env.img_url) {
         return jsonResponse({ error: 'Neither R2 nor KV is available to store chunk data.' }, 500);
