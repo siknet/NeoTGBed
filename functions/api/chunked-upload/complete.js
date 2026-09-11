@@ -40,7 +40,7 @@ export async function onRequestPost(context) {
     }
 
     const body = await request.json();
-    const { uploadId } = body || {};
+    const { uploadId, r2Parts } = body || {};
 
     if (!uploadId) {
       return jsonResponse({ error: '缺少 uploadId' }, 400);
@@ -86,12 +86,8 @@ export async function onRequestPost(context) {
     if (storageType === 'r2' && taskData.r2Multipart?.uploadId && taskData.r2Multipart?.key && env.R2_BUCKET) {
       // R2 原生分片完成：直接通知 R2 服务端合并，完全无需在 Worker 内存中拼装大 Blob
       try {
+        const uploadedParts = validateR2Parts(r2Parts, totalChunks);
         const mpUpload = env.R2_BUCKET.resumeMultipartUpload(taskData.r2Multipart.key, taskData.r2Multipart.uploadId);
-        const partsList = await mpUpload.listParts();
-        const uploadedParts = (partsList?.parts || []).map((p) => ({
-          partNumber: p.partNumber,
-          etag: p.etag,
-        }));
         await mpUpload.complete(uploadedParts);
         responseFileKey = `r2:${taskData.r2Multipart.key}`;
         metadataKey = responseFileKey;
@@ -288,6 +284,25 @@ function jsonResponse(body, status = 200) {
     status,
     headers: { 'Content-Type': 'application/json' },
   });
+}
+
+function validateR2Parts(parts, totalChunks) {
+  if (!Array.isArray(parts) || parts.length !== totalChunks) {
+    throw new Error(`R2 分片信息不完整：收到 ${Array.isArray(parts) ? parts.length : 0}/${totalChunks} 个分片`);
+  }
+
+  const normalizedParts = parts.map((part) => ({
+    partNumber: Number(part?.partNumber),
+    etag: String(part?.etag || ''),
+  })).sort((a, b) => a.partNumber - b.partNumber);
+
+  for (let index = 0; index < normalizedParts.length; index++) {
+    const part = normalizedParts[index];
+    if (!Number.isInteger(part.partNumber) || part.partNumber !== index + 1 || !part.etag) {
+      throw new Error(`R2 分片信息无效或缺少第 ${index + 1} 片`);
+    }
+  }
+  return normalizedParts;
 }
 
 function getMissingChunks(uploaded, total) {

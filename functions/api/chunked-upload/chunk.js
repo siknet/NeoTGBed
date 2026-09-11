@@ -52,6 +52,7 @@ export async function onRequestPost(context) {
     }
 
     const chunkArrayBuffer = await chunk.arrayBuffer();
+    let uploadedR2Part = null;
 
     if (chunkBackend === 'r2') {
       if (!env.R2_BUCKET) {
@@ -61,7 +62,17 @@ export async function onRequestPost(context) {
       if (taskData.r2Multipart?.uploadId && taskData.r2Multipart?.key) {
         // R2 原生分片上传：partNumber 从 1 开始
         const mpUpload = env.R2_BUCKET.resumeMultipartUpload(taskData.r2Multipart.key, taskData.r2Multipart.uploadId);
-        await mpUpload.uploadPart(chunkIndex + 1, chunkArrayBuffer);
+        const uploadedPart = await mpUpload.uploadPart(chunkIndex + 1, chunkArrayBuffer);
+        // R2 Workers API does not expose listParts().  Return the ETag to the
+        // browser so it can submit the authoritative part list on completion.
+        uploadedR2Part = {
+          // Workers R2 may omit partNumber; the requested number is authoritative.
+          partNumber: chunkIndex + 1,
+          etag: String(uploadedPart?.etag || '').replace(/^\"|\"$/g, ''),
+        };
+        if (!uploadedR2Part.etag) {
+          throw new Error(`R2 分片 ${chunkIndex + 1} 未返回有效 ETag`);
+        }
       } else {
         await env.R2_BUCKET.put(getChunkObjectKey(uploadId, chunkIndex), chunkArrayBuffer, {
           customMetadata: {
@@ -104,6 +115,7 @@ export async function onRequestPost(context) {
       chunkIndex,
       uploadedChunks,
       chunkBackend,
+      r2Part: uploadedR2Part || undefined,
       progress,
     });
   } catch (error) {

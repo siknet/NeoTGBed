@@ -4804,6 +4804,7 @@
             const concurrency = Math.min(3, totalChunks);
             let nextIndex = 0;
             let finishedCount = 0;
+            const r2Parts = [];
 
             const uploadWorker = async () => {
               while (nextIndex < totalChunks) {
@@ -4826,9 +4827,12 @@
                   },
                 );
 
+                const chunkData = await chunkResponse.json().catch(() => ({}));
                 if (!chunkResponse.ok) {
-                  const errData = await chunkResponse.json().catch(() => ({}));
-                  throw new Error(errData.error || `分片 ${i + 1} 上传失败`);
+                  throw new Error(chunkData.error || `分片 ${i + 1} 上传失败`);
+                }
+                if (chunkData.r2Part) {
+                  r2Parts.push(chunkData.r2Part);
                 }
 
                 finishedCount++;
@@ -4846,7 +4850,7 @@
               {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ uploadId }),
+                body: JSON.stringify({ uploadId, r2Parts }),
                 credentials: "include",
               },
             );
